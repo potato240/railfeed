@@ -27,12 +27,56 @@ log = logging.getLogger("railfeed")
 with open("data/stations.json", encoding="utf-8") as f:
     STATIONS = json.load(f)
 
+POS = {st["tiploc"]: (st["lat"], st["lon"], st["name"]) for st in STATIONS.values() if st.get("tiploc")}
 trains = {}      # train_id -> dict
+routes = {}      # train_id -> {"stops", "mid", "i"} once matched to a timetable entry, {"miss": time} if not, "pending" while matching
 dirty = set()    # train_ids changed since last flush
 removed = set()
 acts = {}        # train_id -> ((train_uid, schedule_start_date, schedule_type), seen_at), from activation messages
 clients = set()  # one asyncio.Queue per connected browser
 stats = {"messages": 0, "last_message": None}
+
+
+def signed_delay(t):
+    """Seconds late (+) or early (-)."""
+    sign = 1 if t.get("status") == "LATE" else -1 if t.get("status") == "EARLY" else 0
+    return sign * t.get("var", 0) * 60
+
+
+def update_leg(tid):
+    """Work out where the train is heading from its latest station event and its matched timetable."""
+    t, r = trains.get(tid), routes.get(tid)
+    if not t or not isinstance(r, dict) or "stops" not in r:
+        return
+    stops = r["stops"]
+    i = next((k for k in range(r["i"], len(stops)) if stops[k][0] == t.get("tp")), None)
+    if i is None:
+        i = next((k for k in range(len(stops)) if stops[k][0] == t.get("tp")), None)
+    if i is None:  # not on the route we matched (diverted?): stop animating and match again next time
+        routes.pop(tid, None)
+        t["seg"] = t["nxt"] = None
+        return
+    r["i"] = i
+    res = schedule_db.next_leg(stops, r["mid"], POS, i, t["ev"], t["ts"], signed_delay(t))
+    t["seg"], t["nxt"] = res if res else (None, None)
+
+
+async def match_route(tid, act, ts, tp, delay):
+    """Match a train to its timetable entry off the event loop, then plan its movement."""
+    try:
+        res = await asyncio.to_thread(schedule_db.find, tid, act, ts, tp, delay)
+    except Exception as e:
+        log.error("Route match failed: %s", e)
+        res = None
+    if tid not in trains:
+        routes.pop(tid, None)
+        return
+    if res and res[0][13]:
+        routes[tid] = {"stops": schedule_db.parse_stops(res[0][13]), "mid": res[1], "i": 0}
+    else:
+        routes[tid] = {"miss": time.time()}
+    update_leg(tid)
+    dirty.add(tid)
 
 
 def handle_message(m):
@@ -48,6 +92,7 @@ def handle_message(m):
                       body.get("schedule_type")), time.time())
         return
     if mt == "0002":  # cancellation
+        routes.pop(tid, None)
         if trains.pop(tid, None):
             removed.add(tid)
             dirty.discard(tid)
@@ -74,8 +119,16 @@ def handle_message(m):
         "status": body.get("variation_status"),
         "ts": ts,
     }
+    trains[tid]["seg"] = trains[tid]["nxt"] = None
     dirty.add(tid)
     removed.discard(tid)
+    r = routes.get(tid)
+    if isinstance(r, dict) and "stops" in r:
+        update_leg(tid)
+    elif r != "pending" and (r is None or time.time() - r["miss"] > 600) and schedule_db.available():
+        routes[tid] = "pending"
+        act = acts.get(tid)
+        asyncio.ensure_future(match_route(tid, act[0] if act else None, ts, st.get("tiploc"), signed_delay(trains[tid])))
 
 
 class Listener(stomp.ConnectionListener):
@@ -136,11 +189,12 @@ async def flusher():
         cutoff = time.time() - MAX_AGE
         for tid in [t for t, v in trains.items() if v["ts"] < cutoff]:
             del trains[tid]
+            routes.pop(tid, None)
             removed.add(tid)
             dirty.discard(tid)
         if not dirty and not removed:
             continue
-        payload = json.dumps({"u": [trains[t] for t in dirty if t in trains], "r": list(removed)})
+        payload = json.dumps({"u": [trains[t] for t in dirty if t in trains], "r": list(removed), "now": time.time()})
         dirty.clear()
         removed.clear()
         for q in clients:
@@ -158,7 +212,7 @@ async def events(request):
     q = asyncio.Queue()
     clients.add(q)
     try:
-        snapshot = json.dumps({"u": list(trains.values()), "r": []})
+        snapshot = json.dumps({"u": list(trains.values()), "r": [], "now": time.time()})
         await resp.write(f"data: {snapshot}\n\n".encode())
         while True:
             try:
@@ -185,8 +239,7 @@ async def train_info(request):
     if not t:
         raise web.HTTPNotFound()
     act = acts.get(tid)
-    delay = t.get("var", 0) * (1 if t.get("status") == "LATE" else -1 if t.get("status") == "EARLY" else 0) * 60
-    info = await asyncio.to_thread(schedule_db.lookup, tid, act[0] if act else None, t["ts"], t.get("tp"), delay)
+    info = await asyncio.to_thread(schedule_db.lookup, tid, act[0] if act else None, t["ts"], t.get("tp"), signed_delay(t))
     return web.json_response({"info": info, "loading": not schedule_db.available()})
 
 

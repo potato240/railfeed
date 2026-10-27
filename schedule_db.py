@@ -107,7 +107,7 @@ def _by_headcode(db, tid, ts, tiploc, delay):
             continue
         key = (STP_RANK.get(row[4], 9), min(diffs))
         if best is None or key < best[0]:
-            best = (key, row[:13])
+            best = (key, row)
     if best is None:
         return None
     uid = best[1][0]
@@ -127,6 +127,54 @@ def _hhmm(secs):
     return None if secs is None else f"{secs // 3600 % 24:02d}:{secs % 3600 // 60:02d}"
 
 
+def _find_row(db, tid, act_key, ts, tiploc, delay):
+    """The timetable row (COLS + stops) for a running train: exact via its activation, else headcode + route check."""
+    row = None
+    if act_key and None not in act_key:
+        row = db.execute(f"SELECT {COLS}, stops FROM schedules WHERE uid=? AND start=? AND stp=?", act_key).fetchone()
+    return row or _by_headcode(db, tid, ts, tiploc, delay)
+
+
+def find(tid, act_key, ts, tiploc, delay):
+    """-> (row, midnight_epoch_of_service_day) or None. Used to plan the train's movement."""
+    db = connect()
+    if db is None:
+        return None
+    try:
+        row = _find_row(db, tid, act_key, ts, tiploc, delay)
+        d = service_date(tid, ts)
+        if row is None or d is None:
+            return None
+        return row, dt.datetime.combine(d, dt.time(), LONDON).timestamp()
+    finally:
+        db.close()
+
+
+def parse_stops(s):
+    """'TIPLOC,arr,dep;...' -> [(tiploc, arr, dep)], times in seconds after service-day midnight."""
+    return [(tp, int(a), int(d)) for tp, a, d in (p.split(",") for p in s.split(";"))]
+
+
+def next_leg(stops, mid, pos, i, ev, ts, delay):
+    """The train has just had `ev` at stops[i]. Where is it heading, and when?
+    pos maps tiploc -> (lat, lon, name) for stations we can plot.
+    -> ([lat0, lon0, lat1, lon1, t0, t1], next station name), or None."""
+    cur = pos.get(stops[i][0])
+    if not cur:
+        return None
+    for j in range(i + 1, len(stops)):
+        nxt = pos.get(stops[j][0])
+        if nxt:
+            break
+    else:
+        return None  # end of the line
+    t0 = max(ts, mid + stops[i][2] + delay) if ev == "ARRIVAL" else ts  # waits for its departure time
+    t1 = max(mid + stops[j][1] + delay, t0 + 30)
+    if t1 - t0 > 3 * 3600:
+        return None  # implausible: don't animate
+    return [cur[0], cur[1], nxt[0], nxt[1], round(t0), round(t1)], nxt[2]
+
+
 def lookup(tid, act_key, ts, tiploc=None, delay=0):
     """Describe a running train from the timetable, or None if there's no match.
     act_key is (train_uid, schedule_start_date, schedule_type) from its activation message."""
@@ -134,13 +182,10 @@ def lookup(tid, act_key, ts, tiploc=None, delay=0):
     if db is None:
         return None
     try:
-        row = None
-        if act_key and None not in act_key:
-            row = db.execute(f"SELECT {COLS} FROM schedules WHERE uid=? AND start=? AND stp=?", act_key).fetchone()
-        if row is None:
-            row = _by_headcode(db, tid, ts, tiploc, delay)
+        row = _find_row(db, tid, act_key, ts, tiploc, delay)
         if row is None:
             return None
+        row = row[:13]
         _, _, _, _, stp, _, atoc, cat, status, origin, dest, dep, arr = row
         kind = CATEGORIES.get(cat, cat or "Unknown")
         if status in ("F", "2"):

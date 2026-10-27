@@ -18,7 +18,7 @@
   <br><i style="background:#2e9e4f"></i>on time<i style="background:#2f7fd8"></i>early<i style="background:#f0a020"></i>late<i style="background:#d6322d"></i>10+ min</div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const map = L.map('map').setView([54.0, -2.5], 6);
+const map = L.map('map', {preferCanvas: true}).setView([54.0, -2.5], 6);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 18,
   attribution: '&copy; OpenStreetMap contributors | Contains information of Network Rail Infrastructure Limited licensed under the Open Government Licence.'
@@ -34,9 +34,28 @@ function colour(t) {
 function label(t) {
   const v = t.status === 'ON TIME' ? 'on time' : `${t.var} min ${(t.status || '').toLowerCase()}`;
   const when = new Date(t.ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
-  return `<b>${t.head}</b> ${t.ev ? t.ev.toLowerCase() : ''} ${t.stn} at ${when}<br>${v}`;
+  const next = t.nxt ? `<br>heading to ${t.nxt}` : '';
+  return `<b>${t.head}</b> ${t.ev ? t.ev.toLowerCase() : ''} ${t.stn} at ${when}<br>${v}${next}`;
 }
 const latest = new Map();
+let clockOffset = 0;                       // server time minus this browser's time, in seconds
+const serverNow = () => Date.now() / 1000 + clockOffset;
+// Where a train is on its current leg: waits at the start until t0, slides in a straight line, waits at the end.
+function where(t, now) {
+  const s = t.seg;
+  if (!s) return [t.lat, t.lon];
+  const f = Math.min(1, Math.max(0, (now - s[4]) / (s[5] - s[4])));
+  return [s[0] + (s[2] - s[0]) * f, s[1] + (s[3] - s[1]) * f];
+}
+function tick() {
+  const now = serverNow();
+  for (const [id, t] of latest) {
+    if (!t.seg || t.done) continue;
+    markers.get(id).setLatLng(where(t, now));
+    t.done = now >= t.seg[5];
+  }
+}
+setInterval(tick, 1000);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 async function showDetails(m, id) {
   const t = latest.get(id);
@@ -60,10 +79,10 @@ function upsert(t) {
   latest.set(t.id, t);
   let m = markers.get(t.id);
   if (!m) {
-    m = L.circleMarker([t.lat, t.lon], {radius: 6, weight: 1, color: '#222', fillOpacity: 0.9}).addTo(map);
+    m = L.circleMarker(where(t, serverNow()), {radius: 6, weight: 1, color: '#222', fillOpacity: 0.9}).addTo(map);
     m.on('click', () => showDetails(m, t.id));
     markers.set(t.id, m);
-  } else m.setLatLng([t.lat, t.lon]);
+  } else m.setLatLng(where(t, serverNow()));
   m.setStyle({fillColor: colour(t)});
   m.unbindTooltip();
   m.bindTooltip(label(t));
@@ -71,6 +90,7 @@ function upsert(t) {
 const es = new EventSource('events');
 es.onmessage = e => {
   const d = JSON.parse(e.data);
+  if (d.now) clockOffset = d.now - Date.now() / 1000;
   d.u.forEach(upsert);
   d.r.forEach(id => { const m = markers.get(id); if (m) { map.removeLayer(m); markers.delete(id); latest.delete(id); } });
   document.getElementById('count').textContent = markers.size + ' trains';
