@@ -17,15 +17,7 @@ Contains information of Network Rail Infrastructure Limited licensed under the O
     .venv/bin/python build_stations.py
     .venv/bin/python server.py                     # http://127.0.0.1:8080
 
-## Deploy (Ubuntu)
-    sudo useradd --system --home /opt/railfeed --shell /usr/sbin/nologin railfeed
-    sudo git clone https://github.com/potato240/railfeed /opt/railfeed
-    cd /opt/railfeed && sudo python3 -m venv .venv && sudo .venv/bin/pip install -r requirements.txt
-    sudo cp .env.example .env && sudo nano .env    # add the login
-    sudo chown -R railfeed:railfeed /opt/railfeed && sudo chmod 600 .env
-    sudo -u railfeed .venv/bin/python build_stations.py
-    sudo cp deploy/railfeed.service /etc/systemd/system/ && sudo systemctl enable --now railfeed
-    sudo cp deploy/nginx.conf /etc/nginx/sites-available/railfeed   # edit server_name first
-    sudo ln -s /etc/nginx/sites-available/railfeed /etc/nginx/sites-enabled/ && sudo nginx -t && sudo systemctl reload nginx
-
-Check: `curl localhost:8080/status` shows train and message counts.
+## Deploy (Coolify)
+New Resource > Public Repository > https://github.com/potato240/railfeed, branch `main`, build pack Dockerfile, port 3000.
+Set domain `https://<subdomain>.stevens-hall.com`, add env vars `NR_USERNAME` and `NR_PASSWORD`, deploy.
+The container builds `data/stations.json` on start. Check `/status` on the site for train and message counts.
