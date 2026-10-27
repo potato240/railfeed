@@ -1,0 +1,18 @@
+[Unit]
+Description=Railfeed live train map
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=railfeed
+WorkingDirectory=/opt/railfeed
+ExecStart=/opt/railfeed/.venv/bin/python server.py
+Restart=always
+RestartSec=5
+# Credentials are read from /opt/railfeed/.env (chmod 600, owned by railfeed)
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

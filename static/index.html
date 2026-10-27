@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live trains</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  html, body, #map { height: 100%; margin: 0; }
+  #info { position: absolute; z-index: 1000; top: 10px; right: 10px; background: #fffd; padding: 6px 10px;
+          border-radius: 6px; font: 13px/1.4 system-ui, sans-serif; }
+  #info i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin: 0 3px 0 8px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="info"><span id="count">connecting…</span>
+  <br><i style="background:#2e9e4f"></i>on time<i style="background:#2f7fd8"></i>early<i style="background:#f0a020"></i>late<i style="background:#d6322d"></i>10+ min</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([54.0, -2.5], 6);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 18,
+  attribution: '&copy; OpenStreetMap contributors | Contains information of Network Rail Infrastructure Limited licensed under the Open Government Licence.'
+}).addTo(map);
+
+const markers = new Map();
+function colour(t) {
+  if (t.status === 'EARLY') return '#2f7fd8';
+  if (t.status === 'LATE') return t.var >= 10 ? '#d6322d' : '#f0a020';
+  if (t.status === 'OFF ROUTE') return '#888';
+  return '#2e9e4f';
+}
+function label(t) {
+  const v = t.status === 'ON TIME' ? 'on time' : `${t.var} min ${(t.status || '').toLowerCase()}`;
+  const when = new Date(t.ts * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  return `<b>${t.head}</b> ${t.ev ? t.ev.toLowerCase() : ''} ${t.stn} at ${when}<br>${v}`;
+}
+function upsert(t) {
+  let m = markers.get(t.id);
+  if (!m) {
+    m = L.circleMarker([t.lat, t.lon], {radius: 6, weight: 1, color: '#222', fillOpacity: 0.9}).addTo(map);
+    markers.set(t.id, m);
+  } else m.setLatLng([t.lat, t.lon]);
+  m.setStyle({fillColor: colour(t)});
+  m.bindTooltip(label(t));
+}
+const es = new EventSource('events');
+es.onmessage = e => {
+  const d = JSON.parse(e.data);
+  d.u.forEach(upsert);
+  d.r.forEach(id => { const m = markers.get(id); if (m) { map.removeLayer(m); markers.delete(id); } });
+  document.getElementById('count').textContent = markers.size + ' trains';
+};
+es.onerror = () => document.getElementById('count').textContent = 'reconnecting…';
+</script>
+</body>
+</html>
