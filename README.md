@@ -21,3 +21,11 @@ Contains information of Network Rail Infrastructure Limited licensed under the O
 New Resource > Public Repository > https://github.com/potato240/railfeed, branch `main`, build pack Dockerfile, port 3000.
 Set domain `https://<subdomain>.stevens-hall.com`, add env vars `NR_USERNAME` and `NR_PASSWORD`, deploy.
 The container builds `data/stations.json` on start. Check `/status` on the site for train and message counts.
+
+## Timetable (SCHEDULE) data
+`load_schedule.py` downloads Network Rail's daily full timetable with the same login and loads it into SQLite (`data/schedule.db`),
+swapping the new file in atomically. The server reads it when a train is clicked, to show operator, type, origin and destination.
+- The server runs the load itself on first start if the database is missing.
+- Nightly refresh: in Coolify, open the app > **Scheduled Tasks** > Add. Command `python load_schedule.py`, frequency `30 4 * * *`, container = the app.
+- Optional: in Coolify > **Storages**, add a persistent volume at `/app/data`, so the database survives redeploys without a re-download.
+- Not covered: VSTP (short-notice) trains have no entry in this file, so they show "No timetable match".

@@ -12,6 +12,9 @@ import stomp
 from aiohttp import web
 from dotenv import load_dotenv
 
+import load_schedule
+import schedule_db
+
 load_dotenv()
 NR_USER, NR_PASS = os.getenv("NR_USERNAME"), os.getenv("NR_PASSWORD")
 HOST = os.getenv("HOST", "127.0.0.1")
@@ -27,6 +30,7 @@ with open("data/stations.json", encoding="utf-8") as f:
 trains = {}      # train_id -> dict
 dirty = set()    # train_ids changed since last flush
 removed = set()
+acts = {}        # train_id -> ((train_uid, schedule_start_date, schedule_type), seen_at), from activation messages
 clients = set()  # one asyncio.Queue per connected browser
 stats = {"messages": 0, "last_message": None}
 
@@ -39,6 +43,10 @@ def handle_message(m):
         return
     stats["messages"] += 1
     stats["last_message"] = time.time()
+    if mt == "0001":  # activation: tells us exactly which timetable entry this train is running
+        acts[tid] = ((body.get("train_uid"), (body.get("schedule_start_date") or "")[:10],
+                      body.get("schedule_type")), time.time())
+        return
     if mt == "0002":  # cancellation
         if trains.pop(tid, None):
             removed.add(tid)
@@ -108,9 +116,22 @@ def stomp_thread(loop):
         delay = min(delay * 2, 120)
 
 
+def initial_schedule_load():
+    try:
+        load_schedule.run()
+    except Exception as e:
+        log.error("Initial schedule load failed: %s", e)
+
+
 async def flusher():
+    ticks = 0
     while True:
         await asyncio.sleep(FLUSH_EVERY)
+        ticks += 1
+        if ticks % 600 == 0:  # forget activations older than 36 hours
+            old = time.time() - 36 * 3600
+            for tid in [t for t, (_, seen) in acts.items() if seen < old]:
+                del acts[tid]
         cutoff = time.time() - MAX_AGE
         for tid in [t for t, v in trains.items() if v["ts"] < cutoff]:
             del trains[tid]
@@ -152,7 +173,19 @@ async def events(request):
 
 
 async def status(request):
-    return web.json_response({"trains": len(trains), "clients": len(clients), **stats})
+    return web.json_response({"trains": len(trains), "clients": len(clients), "activations": len(acts),
+                              "schedule_db": schedule_db.available(), **stats})
+
+
+async def train_info(request):
+    """Timetable details for one train, looked up when its marker is clicked."""
+    tid = request.match_info["id"]
+    t = trains.get(tid)
+    if not t:
+        raise web.HTTPNotFound()
+    act = acts.get(tid)
+    info = await asyncio.to_thread(schedule_db.lookup, tid, act[0] if act else None, t["ts"])
+    return web.json_response({"info": info, "loading": not schedule_db.available()})
 
 
 async def index(request):
@@ -164,6 +197,8 @@ async def on_startup(app):
     app["flusher"] = asyncio.create_task(flusher())
     if NR_USER and NR_PASS:
         threading.Thread(target=stomp_thread, args=(loop,), daemon=True).start()
+        if not schedule_db.available():  # first run; the nightly job keeps it fresh after that
+            threading.Thread(target=initial_schedule_load, daemon=True).start()
     else:
         log.warning("NR_USERNAME/NR_PASSWORD not set: running without a live feed")
 
@@ -173,6 +208,7 @@ def make_app():
     app.router.add_get("/", index)
     app.router.add_get("/events", events)
     app.router.add_get("/status", status)
+    app.router.add_get("/train/{id}", train_info)
     app.router.add_static("/static", "static")
     app.on_startup.append(on_startup)
     return app
