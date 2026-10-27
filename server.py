@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 import load_schedule
 import schedule_db
+import tracks
 
 load_dotenv()
 NR_USER, NR_PASS = os.getenv("NR_USERNAME"), os.getenv("NR_PASSWORD")
@@ -28,6 +29,7 @@ with open("data/stations.json", encoding="utf-8") as f:
     STATIONS = json.load(f)
 
 POS = {st["tiploc"]: (st["lat"], st["lon"], st["name"]) for st in STATIONS.values() if st.get("tiploc")}
+TRACKS = tracks.load()  # real track geometry, or None (then trains move in straight lines)
 trains = {}      # train_id -> dict
 routes = {}      # train_id -> {"stops", "mid", "i"} once matched to a timetable entry, {"miss": time} if not, "pending" while matching
 dirty = set()    # train_ids changed since last flush
@@ -54,11 +56,14 @@ def update_leg(tid):
         i = next((k for k in range(len(stops)) if stops[k][0] == t.get("tp")), None)
     if i is None:  # not on the route we matched (diverted?): stop animating and match again next time
         routes.pop(tid, None)
-        t["seg"] = t["nxt"] = None
+        t["seg"] = t["nxt"] = t["pair"] = None
         return
     r["i"] = i
     res = schedule_db.next_leg(stops, r["mid"], POS, i, t["ev"], t["ts"], signed_delay(t))
-    t["seg"], t["nxt"] = res if res else (None, None)
+    if res:
+        t["seg"], t["nxt"], t["pair"] = res[0], res[1], [stops[i][0], res[2]]  # pair: browser fetches the track between them
+    else:
+        t["seg"] = t["nxt"] = t["pair"] = None
 
 
 async def match_route(tid, act, ts, tp, delay):
@@ -119,7 +124,7 @@ def handle_message(m):
         "status": body.get("variation_status"),
         "ts": ts,
     }
-    trains[tid]["seg"] = trains[tid]["nxt"] = None
+    trains[tid]["seg"] = trains[tid]["nxt"] = trains[tid]["pair"] = None
     dirty.add(tid)
     removed.discard(tid)
     r = routes.get(tid)
@@ -229,7 +234,8 @@ async def events(request):
 
 async def status(request):
     return web.json_response({"trains": len(trains), "clients": len(clients), "activations": len(acts),
-                              "schedule_db": schedule_db.available(), **stats})
+                              "schedule_db": schedule_db.available(),
+                              "track_graph": TRACKS is not None, **stats})
 
 
 async def train_info(request):
@@ -241,6 +247,15 @@ async def train_info(request):
     act = acts.get(tid)
     info = await asyncio.to_thread(schedule_db.lookup, tid, act[0] if act else None, t["ts"], t.get("tp"), signed_delay(t))
     return web.json_response({"info": info, "loading": not schedule_db.available()})
+
+
+async def track_route(request):
+    """The track between two stations (tiplocs), as [[lat, lon], ...]; null if unknown."""
+    a, b = request.match_info["a"], request.match_info["b"]
+    if TRACKS is None:
+        return web.json_response({"p": None})
+    body = await asyncio.to_thread(TRACKS.route_json, a, b)
+    return web.Response(text=body, content_type="application/json", headers={"Cache-Control": "public, max-age=3600"})
 
 
 async def index(request):
@@ -264,6 +279,7 @@ def make_app():
     app.router.add_get("/events", events)
     app.router.add_get("/status", status)
     app.router.add_get("/train/{id}", train_info)
+    app.router.add_get("/route/{a}/{b}", track_route)
     app.router.add_static("/static", "static")
     app.on_startup.append(on_startup)
     return app

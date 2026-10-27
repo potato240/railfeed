@@ -40,11 +40,41 @@ function label(t) {
 const latest = new Map();
 let clockOffset = 0;                       // server time minus this browser's time, in seconds
 const serverNow = () => Date.now() / 1000 + clockOffset;
-// Where a train is on its current leg: waits at the start until t0, slides in a straight line, waits at the end.
+// Track between two stations, fetched once per pair and shared by every train on that leg.
+const routes = new Map();                  // "A|B" -> {p, cum} | null (no track known) | 'loading'
+function routeFor(pair) {
+  const key = pair.join('|');
+  if (!routes.has(key)) {
+    routes.set(key, 'loading');
+    fetch(`route/${pair[0]}/${pair[1]}`).then(r => r.json()).then(d => routes.set(key, d.p ? prep(d.p) : null))
+      .catch(() => routes.set(key, null));
+  }
+  const r = routes.get(key);
+  return r && r !== 'loading' ? r : null;
+}
+function prep(p) {
+  const cum = [0];
+  for (let i = 1; i < p.length; i++) {
+    const dy = p[i][0] - p[i - 1][0], dx = (p[i][1] - p[i - 1][1]) * Math.cos(p[i][0] * Math.PI / 180);
+    cum.push(cum[i - 1] + Math.hypot(dx, dy));
+  }
+  return {p, cum};
+}
+function along(r, f) {                      // point a fraction f of the way along the track
+  const target = f * r.cum[r.cum.length - 1];
+  let lo = 0, hi = r.cum.length - 1;
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (r.cum[mid] <= target) lo = mid; else hi = mid; }
+  const seg = r.cum[hi] - r.cum[lo], g = seg > 0 ? (target - r.cum[lo]) / seg : 0;
+  return [r.p[lo][0] + (r.p[hi][0] - r.p[lo][0]) * g, r.p[lo][1] + (r.p[hi][1] - r.p[lo][1]) * g];
+}
+// Where a train is on its current leg: waits at the start until t0, moves along the track (straight line if
+// the track isn't known), waits at the end.
 function where(t, now) {
   const s = t.seg;
   if (!s) return [t.lat, t.lon];
   const f = Math.min(1, Math.max(0, (now - s[4]) / (s[5] - s[4])));
+  const r = t.pair && routeFor(t.pair);
+  if (r && r.cum[r.cum.length - 1] > 0) return along(r, f);
   return [s[0] + (s[2] - s[0]) * f, s[1] + (s[3] - s[1]) * f];
 }
 function tick() {

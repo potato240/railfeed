@@ -158,7 +158,7 @@ def parse_stops(s):
 def next_leg(stops, mid, pos, i, ev, ts, delay):
     """The train has just had `ev` at stops[i]. Where is it heading, and when?
     pos maps tiploc -> (lat, lon, name) for stations we can plot.
-    -> ([lat0, lon0, lat1, lon1, t0, t1], next station name), or None."""
+    -> ([lat0, lon0, lat1, lon1, t0, t1], next station name, next station tiploc), or None."""
     cur = pos.get(stops[i][0])
     if not cur:
         return None
@@ -172,7 +172,7 @@ def next_leg(stops, mid, pos, i, ev, ts, delay):
     t1 = max(mid + stops[j][1] + delay, t0 + 30)
     if t1 - t0 > 3 * 3600:
         return None  # implausible: don't animate
-    return [cur[0], cur[1], nxt[0], nxt[1], round(t0), round(t1)], nxt[2]
+    return [cur[0], cur[1], nxt[0], nxt[1], round(t0), round(t1)], nxt[2], stops[j][0]
 
 
 def lookup(tid, act_key, ts, tiploc=None, delay=0):

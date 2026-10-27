@@ -29,3 +29,11 @@ swapping the new file in atomically. The server reads it when a train is clicked
 - Nightly refresh: in Coolify, open the app > **Scheduled Tasks** > Add. Command `python load_schedule.py`, frequency `30 4 * * *`, container = the app.
 - Optional: in Coolify > **Storages**, add a persistent volume at `/app/data`, so the database survives redeploys without a re-download.
 - Not covered: VSTP (short-notice) trains have no entry in this file, so they show "No timetable match".
+
+## Track geometry (dots follow the rails)
+`track/railgraph.json.gz` is a compact graph of Great Britain's railway built from OpenStreetMap by `build_tracks.py`
+(downloads rail lines from Overpass, snaps NaPTAN stations onto them; about 30 minutes, needs no login, resumable).
+It is committed to the repo, so deploys don't need to rebuild it. Re-run `python build_tracks.py` occasionally to refresh.
+`tracks.py` finds the shortest path along the track between two stations; the server serves it at `/route/<from tiploc>/<to tiploc>`
+and the browser moves each dot along it. If a pair can't be routed, the dot moves in a straight line instead.
+Track data (c) OpenStreetMap contributors, available under the ODbL (https://www.openstreetmap.org/copyright).
