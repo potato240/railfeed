@@ -63,6 +63,7 @@ def main():
         stations[stanox] = {
             "name": clean(row.get("NLCDESC")).title(),
             "crs": crs,
+            "tiploc": tiploc,
             "lat": pos[0],
             "lon": pos[1],
         }

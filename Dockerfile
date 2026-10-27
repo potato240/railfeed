@@ -8,4 +8,4 @@ USER railfeed
 ENV HOST=0.0.0.0 PORT=3000
 EXPOSE 3000
 # Build the station list on first start (needs NR_USERNAME/NR_PASSWORD), then run the server
-CMD ["sh", "-c", "[ -f data/stations.json ] || python build_stations.py; exec python server.py"]
+CMD ["sh", "-c", "{ [ -f data/stations.json ] && grep -q '\"tiploc\"' data/stations.json; } || python build_stations.py; exec python server.py"]

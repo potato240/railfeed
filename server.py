@@ -68,6 +68,7 @@ def handle_message(m):
         "cls": tid[2:3],
         "lat": st["lat"], "lon": st["lon"],
         "stn": st["name"],
+        "tp": st.get("tiploc"),
         "ev": body.get("event_type"),
         "var": var,
         "status": body.get("variation_status"),
@@ -184,7 +185,8 @@ async def train_info(request):
     if not t:
         raise web.HTTPNotFound()
     act = acts.get(tid)
-    info = await asyncio.to_thread(schedule_db.lookup, tid, act[0] if act else None, t["ts"])
+    delay = t.get("var", 0) * (1 if t.get("status") == "LATE" else -1 if t.get("status") == "EARLY" else 0) * 60
+    info = await asyncio.to_thread(schedule_db.lookup, tid, act[0] if act else None, t["ts"], t.get("tp"), delay)
     return web.json_response({"info": info, "loading": not schedule_db.available()})
 
 
@@ -197,7 +199,7 @@ async def on_startup(app):
     app["flusher"] = asyncio.create_task(flusher())
     if NR_USER and NR_PASS:
         threading.Thread(target=stomp_thread, args=(loop,), daemon=True).start()
-        if not schedule_db.available():  # first run; the nightly job keeps it fresh after that
+        if not schedule_db.current():  # first run or old format; the nightly job keeps it fresh after that
             threading.Thread(target=initial_schedule_load, daemon=True).start()
     else:
         log.warning("NR_USERNAME/NR_PASSWORD not set: running without a live feed")
